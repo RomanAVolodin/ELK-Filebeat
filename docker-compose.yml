@@ -1,0 +1,71 @@
+version: '2.2'
+services:
+    app:
+      build:
+        context: .
+        dockerfile: ./deploy/Dockerfile
+      ports:
+        - "5005:5000"
+      volumes:
+        - ./app:/code
+      environment:
+        PYTHONUNBUFFERED: 1
+        SENTRY_DSN: https://2ba4ee28b0dc46cfb1615f16f6487124@o476876.ingest.sentry.io/4503896328241152
+
+    nginx:
+      image: nginx:1.19.2
+      volumes:
+        - ./deploy/etc/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+        - ./deploy/etc/nginx/conf.d:/etc/nginx/conf.d:ro
+        - /tmp/logs/nginx/:/var/log/nginx/
+      depends_on:
+        - app
+      ports:
+        - 8080:80
+
+    elasticsearch:
+      image: elasticsearch:7.17.0
+      environment:
+        # Указываем ES запуститься в одном экземпляре
+        discovery.type: single-node
+      ports:
+        - 9200:9200
+      # Обратите внимание: не стоит использовать для ELK тот же ES, который задействован для полнотекстового поиска в вашем сервисе
+
+    kibana:
+      image: kibana:7.17.0
+      ports:
+        - "5601:5601"
+      depends_on:
+        - elasticsearch
+
+    logstash:
+      image: logstash:8.4.2
+      depends_on:
+        - elasticsearch
+      environment:
+        XPACK_MONITORING_ENABLED: "false"
+        ES_HOST: "elasticsearch:9200"
+      ports:
+        - "5044:5044/udp"
+      volumes:
+        # Монтируем файл с конфигурацией logstash
+        - ./deploy/logstash.conf:/config/logstash.conf:ro
+        - /tmp/logs/nginx/:/var/log/nginx/:ro
+      # Запускаем с указанием конфигурационного файла
+      command: logstash -f /config/logstash.conf
+
+    filebeat:
+      image: docker.io/elastic/filebeat:8.4.2
+      command: filebeat -e -strict.perms=false
+      volumes:
+        - /tmp/logs/nginx:/var/log/nginx:ro
+        - ./deploy/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      depends_on:
+        - app
+        - nginx
+        - logstash
+        - elasticsearch
+        - kibana
+      links:
+        - logstash
